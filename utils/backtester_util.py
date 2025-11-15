@@ -128,8 +128,8 @@ def backtest_buy_the_dip(symbols: List[str], start_date: datetime, end_date: dat
                 continue
             
             # Calculate 20-day high
-            recent_high = historical['High'].tail(20).max()
-            current_price = historical['Close'].iloc[-1]
+            recent_high = float(historical['High'].tail(20).max())
+            current_price = float(historical['Close'].iloc[-1])
             
             # Check if we have a dip
             dip_pct = (recent_high - current_price) / recent_high
@@ -165,12 +165,12 @@ def backtest_buy_the_dip(symbols: List[str], start_date: datetime, end_date: dat
                 actual_exit_time = None
                 
                 for idx, row in future_data.iterrows():
-                    if row['High'] >= target_price:
+                    if float(row['High']) >= target_price:
                         exit_price = target_price
                         actual_exit_time = idx
                         hit_target = True
                         break
-                    elif row['Low'] <= stop_price:
+                    elif float(row['Low']) <= stop_price:
                         exit_price = stop_price
                         actual_exit_time = idx
                         hit_stop = True
@@ -178,7 +178,7 @@ def backtest_buy_the_dip(symbols: List[str], start_date: datetime, end_date: dat
                 
                 # If neither hit, exit at end of hold period
                 if exit_price is None:
-                    exit_price = future_data['Close'].iloc[-1]
+                    exit_price = float(future_data['Close'].iloc[-1])
                     actual_exit_time = future_data.index[-1]
                 
                 # Calculate P&L
@@ -257,7 +257,7 @@ def backtest_vix_strategy(symbols: List[str], start_date: datetime, end_date: da
     
     # Iterate through VIX data
     for idx, vix_row in vix_data.iterrows():
-        vix_close = vix_row['Close']
+        vix_close = float(vix_row['Close'])
         
         # Check if VIX exceeds threshold
         if vix_close > vix_threshold:
@@ -273,7 +273,7 @@ def backtest_vix_strategy(symbols: List[str], start_date: datetime, end_date: da
                 if trade_date not in df.index:
                     continue
                 
-                entry_price = df.loc[trade_date, 'Close']
+                entry_price = float(df.loc[trade_date, 'Close'])
                 entry_time = trade_date
                 shares = int((capital * position_size) / entry_price)
                 
@@ -292,7 +292,7 @@ def backtest_vix_strategy(symbols: List[str], start_date: datetime, end_date: da
                     continue
                 
                 exit_row = future_data.iloc[0]
-                exit_price = exit_row['Close']
+                exit_price = float(exit_row['Close'])
                 actual_exit_time = exit_row.name
                 
                 # Calculate P&L
