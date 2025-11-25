@@ -9,3 +9,6 @@ openai
 alpaca-py
 sqlalchemy
 psycopg2-binary
+langchain-openai
+langgraph
+langchain-core
