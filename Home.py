@@ -9,6 +9,11 @@ from datetime import datetime, timedelta
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from utils.backtester_util import backtest_buy_the_dip
+from dotenv import load_dotenv
+import os
+
+# Load environment variables
+load_dotenv()
 
 # Page configuration
 st.set_page_config(
