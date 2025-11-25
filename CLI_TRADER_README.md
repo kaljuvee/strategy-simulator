@@ -59,6 +59,9 @@ python cli_trader.py --strategy vix --mode paper --vix-threshold 25
 
 # Dry run (no actual trades)
 python cli_trader.py --strategy buy-the-dip --mode paper --dry-run
+
+# Continuous loop (uses EODHD intraday prices; requires EODHD_API_KEY)
+python cli_trader.py --strategy buy-the-dip --mode paper --loop --interval 300
 ```
 
 ### Live Trading
@@ -83,6 +86,8 @@ python cli_trader.py --strategy buy-the-dip --mode live --symbols AAPL,MSFT
 | `--dip-threshold` | float | `5.0` | Dip threshold percentage for buy-the-dip |
 | `--vix-threshold` | float | `20.0` | VIX threshold for VIX strategy |
 | `--dry-run` | flag | `False` | Dry run mode (no actual trades) |
+| `--loop` | flag | `False` | Continuously run with periodic checks |
+| `--interval` | int | `300` | Polling interval in seconds for loop mode |
 
 ## Strategies
 
@@ -92,7 +97,7 @@ Buys stocks when they dip below a threshold from recent highs.
 
 **Logic:**
 1. Calculate recent 20-day high
-2. Compare current price to recent high
+2. Compare intraday price (EODHD) to recent high
 3. If dip >= threshold, place buy order
 
 **Parameters:**
@@ -107,6 +112,14 @@ python cli_trader.py \
   --symbols AAPL,MSFT,NVDA \
   --dip-threshold 7.5 \
   --capital 2000
+```
+
+### Continuous Loop Mode
+
+Run periodically during market hours. Uses EODHD intraday prices when available.
+
+```bash
+python cli_trader.py --strategy buy-the-dip --mode paper --loop --interval 300
 ```
 
 ### VIX Strategy
@@ -220,6 +233,8 @@ ALPACA_LIVE_API_KEY=your_live_api_key
 ALPACA_LIVE_SECRET_KEY=your_live_secret_key
 
 # Market Data APIs
+EODHD_API_KEY=your_eodhd_api_key   # used for intraday prices in CLI loop
+# Optional fallback:
 POLYGON_API_KEY=your_polygon_key
 ```
 

@@ -14,6 +14,8 @@ from datetime import datetime, timedelta
 import time
 from dotenv import load_dotenv
 import requests
+import json
+from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
@@ -108,17 +110,34 @@ class AlpacaAPI:
             order = self.trading_client.submit_order(req)
             order_dict = order.dict()
             
-            # Store order in database
+            # Store order either in DB (if available) or fallback to local JSONL
+            stored = False
             try:
-                from utils.db.orders_db_util import store_order_fixed
-                stored_order = store_order_fixed(order_dict, is_paper=self.paper)
-                if stored_order:
+                from utils.db.orders_db_util import store_order_fixed  # type: ignore
+                stored = bool(store_order_fixed(order_dict, is_paper=self.paper))
+                if stored:
                     logger.info(f"Order {order_dict.get('id')} stored in database")
-                else:
-                    logger.warning(f"Failed to store order {order_dict.get('id')} in database")
             except Exception as db_error:
-                logger.warning(f"Failed to store order {order_dict.get('id')} in database")
-                # Don't fail the order creation if database storage fails
+                # DB module not available or failed; fallback to local storage
+                try:
+                    orders_dir = Path("data") / "orders"
+                    orders_dir.mkdir(parents=True, exist_ok=True)
+                    date_str = datetime.utcnow().strftime("%Y-%m-%d")
+                    outfile = orders_dir / f"orders-{date_str}.jsonl"
+                    with outfile.open("a", encoding="utf-8") as f:
+                        f.write(json.dumps({
+                            **order_dict,
+                            "_stored_at": datetime.utcnow().isoformat() + "Z",
+                            "_paper": self.paper
+                        }) + "\n")
+                    stored = True
+                    logger.info(f"Order {order_dict.get('id')} stored locally at {outfile}")
+                except Exception as file_err:
+                    stored = False
+                    logger.error(f"Failed to persist order {order_dict.get('id')} locally: {file_err}")
+            
+            if not stored:
+                logger.warning(f"Order {order_dict.get('id')} not persisted to DB or local file")
             
             return order_dict
         except Exception as e:

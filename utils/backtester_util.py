@@ -435,20 +435,27 @@ def backtest_momentum_strategy(
                         # Record trade if exit found
                         if exit_date and exit_price:
                             pnl = (exit_price - entry_price) * shares
+                            pnl_pct = ((exit_price - entry_price) / entry_price) * 100
                             capital += pnl
                             
+                            # Align columns to UI expectations (ticker/entry_time/exit_time/pnl_pct etc.)
                             trades.append({
-                                'symbol': symbol,
-                                'entry_date': entry_date,
-                                'exit_date': exit_date,
+                                'ticker': symbol,
+                                'entry_time': entry_date,
+                                'exit_time': exit_date,
                                 'entry_price': entry_price,
                                 'exit_price': exit_price,
                                 'shares': shares,
                                 'pnl': pnl,
-                                'return_pct': ((exit_price - entry_price) / entry_price) * 100,
+                                'pnl_pct': pnl_pct,
                                 'capital_after': capital,
+                                # Momentum-specific fields
                                 'exit_reason': exit_reason,
-                                'momentum_pct': momentum_pct
+                                'momentum_pct': momentum_pct,
+                                # Placeholder fields used by UI for other strategies
+                                'hit_target': exit_reason == 'take_profit',
+                                'hit_stop': exit_reason == 'stop_loss',
+                                'dip_pct': np.nan
                             })
         
         except Exception as e:
@@ -458,13 +465,11 @@ def backtest_momentum_strategy(
     # Convert trades to DataFrame
     trades_df = pd.DataFrame(trades)
     
+    if trades_df.empty:
+        return None
+    
     # Calculate metrics
     metrics = calculate_metrics(trades_df, initial_capital, start_date, end_date)
     
-    return {
-        'trades': trades_df,
-        'metrics': metrics,
-        'initial_capital': initial_capital,
-        'final_capital': capital,
-        'strategy': 'momentum'
-    }
+    # Return in (trades_df, metrics) format to match UI expectations
+    return trades_df, metrics

@@ -27,8 +27,11 @@ logger = logging.getLogger(__name__)
 
 # Import utilities
 from utils.alpaca_util import AlpacaAPI
+from utils.alpaca_util import is_market_open as alpaca_market_open
 from utils.backtester_util import backtest_buy_the_dip, backtest_vix_strategy
-import yfinance as yf
+from utils.eodhd_util import get_real_time_price, get_historical_data
+import time
+from datetime import datetime, timedelta
 
 
 def get_alpaca_client(mode='paper'):
@@ -46,7 +49,7 @@ def get_alpaca_client(mode='paper'):
     return AlpacaAPI(api_key=api_key, secret_key=secret_key, paper=(mode == 'paper'))
 
 
-def execute_buy_the_dip_strategy(client, symbols, capital_per_trade=1000, dip_threshold=5.0):
+def execute_buy_the_dip_strategy(client, symbols, capital_per_trade=1000, dip_threshold=5.0, use_intraday=True, skip_if_position=True):
     """
     Execute buy-the-dip strategy
     
@@ -62,23 +65,37 @@ def execute_buy_the_dip_strategy(client, symbols, capital_per_trade=1000, dip_th
     
     for symbol in symbols:
         try:
-            # Get recent price data
-            ticker = yf.Ticker(symbol)
-            hist = ticker.history(period='1mo')
+            # Get recent price data (last ~30 days) using EODHD
+            from_date = (datetime.utcnow() - timedelta(days=40)).strftime("%Y-%m-%d")
+            hist = get_historical_data(symbol, from_date=from_date)
             
             if hist.empty:
                 logger.warning(f"No data for {symbol}, skipping")
                 continue
             
             # Calculate dip
-            recent_high = hist['High'].tail(20).max()
-            current_price = hist['Close'].iloc[-1]
+            recent_high = float(hist['High'].tail(20).max())
+            # Prefer intraday price via EODHD for "current" price if enabled
+            current_price = None
+            if use_intraday:
+                current_price = get_real_time_price(symbol) or None
+            if current_price is None:
+                current_price = float(hist['Close'].iloc[-1])
             dip_pct = ((recent_high - current_price) / recent_high) * 100
             
             logger.info(f"{symbol}: Recent high ${recent_high:.2f}, Current ${current_price:.2f}, Dip {dip_pct:.2f}%")
             
             # Check if dip threshold met
             if dip_pct >= dip_threshold:
+                # Optional: skip if we already have a position in this symbol
+                if skip_if_position and client:
+                    try:
+                        pos = client.get_position(symbol)
+                        if isinstance(pos, dict) and 'error' not in pos:
+                            logger.info(f"Skipping {symbol}: existing position detected")
+                            continue
+                    except Exception:
+                        pass
                 # Calculate quantity
                 qty = int(capital_per_trade / current_price)
                 
@@ -255,6 +272,12 @@ def main():
     parser.add_argument('--dry-run', action='store_true',
                        help='Dry run mode (no actual trades)')
     
+    parser.add_argument('--loop', action='store_true',
+                       help='Continuously run: check market open and poll at interval')
+    
+    parser.add_argument('--interval', type=int, default=300,
+                       help='Polling interval in seconds for --loop mode (default 300)')
+    
     args = parser.parse_args()
     
     # Parse symbols
@@ -284,42 +307,59 @@ def main():
             logger.info("DRY RUN MODE - No actual trades will be executed")
             client = None
         
-        # Execute strategy
-        if args.strategy == 'status':
-            if client:
-                get_account_status(client)
-            else:
-                logger.info("Cannot get status in dry-run mode")
-                
-        elif args.strategy == 'close-all':
-            if client:
-                close_all_positions(client)
-            else:
-                logger.info("DRY RUN: Would close all positions")
-                
-        elif args.strategy == 'buy-the-dip':
-            if client:
-                execute_buy_the_dip_strategy(
-                    client,
-                    symbols,
-                    capital_per_trade=args.capital,
-                    dip_threshold=args.dip_threshold
-                )
-            else:
-                logger.info(f"DRY RUN: Would execute buy-the-dip strategy")
-                logger.info(f"Parameters: capital=${args.capital}, dip_threshold={args.dip_threshold}%")
-                
-        elif args.strategy == 'vix':
-            if client:
-                execute_vix_strategy(
-                    client,
-                    symbols,
-                    capital_per_trade=args.capital,
-                    vix_threshold=args.vix_threshold
-                )
-            else:
-                logger.info(f"DRY RUN: Would execute VIX strategy")
-                logger.info(f"Parameters: capital=${args.capital}, vix_threshold={args.vix_threshold}")
+        # Execute strategy (single-run or loop)
+        def run_once():
+            if args.strategy == 'status':
+                if client:
+                    get_account_status(client)
+                else:
+                    logger.info("Cannot get status in dry-run mode")
+                    
+            elif args.strategy == 'close-all':
+                if client:
+                    close_all_positions(client)
+                else:
+                    logger.info("DRY RUN: Would close all positions")
+                    
+            elif args.strategy == 'buy-the-dip':
+                if client:
+                    execute_buy_the_dip_strategy(
+                        client,
+                        symbols,
+                        capital_per_trade=args.capital,
+                        dip_threshold=args.dip_threshold,
+                        use_intraday=True,
+                        skip_if_position=True
+                    )
+                else:
+                    logger.info(f"DRY RUN: Would execute buy-the-dip strategy")
+                    logger.info(f"Parameters: capital=${args.capital}, dip_threshold={args.dip_threshold}%")
+                    
+            elif args.strategy == 'vix':
+                if client:
+                    execute_vix_strategy(
+                        client,
+                        symbols,
+                        capital_per_trade=args.capital,
+                        vix_threshold=args.vix_threshold
+                    )
+                else:
+                    logger.info(f"DRY RUN: Would execute VIX strategy")
+                    logger.info(f"Parameters: capital=${args.capital}, vix_threshold={args.vix_threshold}")
+        
+        if args.loop:
+            logger.info("Entering continuous loop mode")
+            while True:
+                try:
+                    if args.dry_run or alpaca_market_open():
+                        run_once()
+                    else:
+                        logger.info("Market is closed; sleeping until next interval")
+                except Exception as loop_err:
+                    logger.error(f"Error in loop: {loop_err}", exc_info=True)
+                time.sleep(max(5, args.interval))
+        else:
+            run_once()
         
         logger.info("="*60)
         logger.info(f"CLI Trader Completed - {datetime.now()}")
