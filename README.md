@@ -59,6 +59,7 @@ python cli_trader.py --strategy buy-the-dip --mode paper --loop --interval 300
 
 Examples:
 
+Example 1:
 ```bash
 # Default basket, paper trading
 python cli_trader.py --strategy buy-the-dip --mode paper
