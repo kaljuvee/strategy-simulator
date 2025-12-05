@@ -110,11 +110,160 @@ def get_historical_data(symbols: List[str], start_date: datetime,
     return data
 
 
+def calculate_buy_and_hold(symbols: List[str], start_date: datetime, end_date: datetime,
+                          initial_capital: float = 10000) -> Tuple[pd.Series, pd.Series]:
+    """
+    Calculate buy-and-hold returns for a portfolio of symbols
+    
+    Args:
+        symbols: List of stock symbols
+        start_date: Start date for buy-and-hold
+        end_date: End date for buy-and-hold
+        initial_capital: Starting capital
+    
+    Returns:
+        Tuple of (dates, portfolio_values) as pandas Series
+    """
+    # Fetch historical data
+    price_data = get_historical_data(symbols, start_date, end_date)
+    
+    if not price_data:
+        return pd.Series(), pd.Series()
+    
+    # Get all unique dates across all symbols
+    all_dates = set()
+    for df in price_data.values():
+        all_dates.update(df.index)
+    
+    all_dates = sorted([d for d in all_dates if start_date <= d <= end_date])
+    
+    if not all_dates:
+        return pd.Series(), pd.Series()
+    
+    # Calculate equal-weighted portfolio
+    portfolio_values = []
+    dates = []
+    
+    # Allocate capital equally across symbols
+    capital_per_symbol = initial_capital / len(symbols) if symbols else initial_capital
+    
+    for date in all_dates:
+        total_value = 0
+        valid_date = False
+        
+        for symbol in symbols:
+            if symbol not in price_data:
+                continue
+            
+            df = price_data[symbol]
+            # Get data up to current date
+            historical = df[df.index <= date]
+            
+            if len(historical) == 0:
+                continue
+            
+            # Get entry price (first available price)
+            entry_data = df[df.index >= start_date]
+            if len(entry_data) == 0:
+                continue
+            
+            entry_price = float(entry_data['Close'].iloc[0])
+            entry_date = entry_data.index[0]
+            
+            # Only calculate if we've passed entry date
+            if date >= entry_date:
+                current_price = float(historical['Close'].iloc[-1])
+                shares = capital_per_symbol / entry_price
+                total_value += shares * current_price
+                valid_date = True
+        
+        if valid_date:
+            dates.append(date)
+            portfolio_values.append(total_value)
+    
+    if not dates:
+        return pd.Series(), pd.Series()
+    
+    return pd.Series(dates), pd.Series(portfolio_values, index=dates)
+
+
+def calculate_single_buy_and_hold(symbol: str, start_date: datetime, end_date: datetime,
+                                 initial_capital: float = 10000) -> Tuple[pd.Series, pd.Series]:
+    """
+    Calculate buy-and-hold returns for a single symbol
+    
+    Args:
+        symbol: Stock symbol
+        start_date: Start date for buy-and-hold
+        end_date: End date for buy-and-hold
+        initial_capital: Starting capital
+    
+    Returns:
+        Tuple of (dates, portfolio_values) as pandas Series
+    """
+    return calculate_buy_and_hold([symbol], start_date, end_date, initial_capital)
+
+
+def calculate_finra_taf_fee(shares: int) -> float:
+    """
+    Calculate FINRA Trading Activity Fee (TAF) for a sell order
+    
+    TAF: $0.000166 per share (sells only)
+    - Rounded up to nearest penny
+    - Capped at $8.30 per trade
+    
+    Args:
+        shares: Number of shares being sold
+    
+    Returns:
+        Fee amount in dollars
+    """
+    if shares <= 0:
+        return 0.0
+    
+    fee_per_share = 0.000166
+    raw_fee = shares * fee_per_share
+    
+    # Round up to nearest penny
+    fee = np.ceil(raw_fee * 100) / 100
+    
+    # Cap at $8.30
+    fee = min(fee, 8.30)
+    
+    return fee
+
+
+def calculate_cat_fee(shares: int) -> float:
+    """
+    Calculate Consolidated Audit Trail (CAT) fee for a trade
+    
+    CAT Fee: $0.0000265 per share (applies to both buys and sells)
+    - For NMS Equities: 1:1 ratio
+    - For OTC Equities: 1:0.01 ratio (we assume NMS for regular stocks)
+    - No cap mentioned
+    
+    Args:
+        shares: Number of shares being traded
+    
+    Returns:
+        Fee amount in dollars
+    """
+    if shares <= 0:
+        return 0.0
+    
+    # CAT Fee Rate for NMS Equities: $0.0000265 per share
+    fee_per_share = 0.0000265
+    fee = shares * fee_per_share
+    
+    return fee
+
+
 def backtest_buy_the_dip(symbols: List[str], start_date: datetime, end_date: datetime,
                         initial_capital: float = 10000, position_size: float = 0.1,
                         dip_threshold: float = 0.02, hold_days: int = 1,
                         take_profit: float = 0.01, stop_loss: float = 0.005,
-                        interval: str = '1d', data_source: str = 'yfinance') -> Tuple[pd.DataFrame, Dict]:
+                        interval: str = '1d', data_source: str = 'yfinance',
+                        include_taf_fees: bool = False, include_cat_fees: bool = False) -> Tuple[pd.DataFrame, Dict]:
     """
     Backtest buy-the-dip strategy
     
@@ -243,6 +392,31 @@ def backtest_buy_the_dip(symbols: List[str], start_date: datetime, end_date: dat
                 
                 # Calculate P&L
                 pnl = (exit_price - entry_price) * shares
+                
+                # Calculate fees
+                taf_fee = 0.0
+                cat_fee_buy = 0.0
+                cat_fee_sell = 0.0
+                total_fees = 0.0
+                
+                # CAT fee on buy (entry)
+                if include_cat_fees:
+                    cat_fee_buy = calculate_cat_fee(shares)
+                    total_fees += cat_fee_buy
+                
+                # TAF fee on sell (exit only)
+                if include_taf_fees:
+                    taf_fee = calculate_finra_taf_fee(shares)
+                    total_fees += taf_fee
+                
+                # CAT fee on sell (exit)
+                if include_cat_fees:
+                    cat_fee_sell = calculate_cat_fee(shares)
+                    total_fees += cat_fee_sell
+                
+                # Subtract all fees from P&L
+                pnl -= total_fees
+                
                 pnl_pct = ((exit_price - entry_price) / entry_price) * 100
                 capital += pnl
                 
@@ -262,7 +436,10 @@ def backtest_buy_the_dip(symbols: List[str], start_date: datetime, end_date: dat
                     'pnl': pnl,
                     'pnl_pct': pnl_pct,
                     'capital_after': capital,
-                    'dip_pct': dip_pct * 100
+                    'dip_pct': dip_pct * 100,
+                    'taf_fee': taf_fee,
+                    'cat_fee': cat_fee_buy + cat_fee_sell,
+                    'total_fees': total_fees
                 })
         
         # Increment based on interval
@@ -413,7 +590,9 @@ def backtest_momentum_strategy(
     take_profit_pct: Optional[float] = 10.0,
     stop_loss_pct: Optional[float] = 5.0,
     interval: str = '1d',
-    data_source: str = 'yfinance'
+    data_source: str = 'yfinance',
+    include_taf_fees: bool = False,
+    include_cat_fees: bool = False
 ) -> Dict:
     """
     Backtest momentum trading strategy
@@ -510,6 +689,31 @@ def backtest_momentum_strategy(
                         # Record trade if exit found
                         if exit_date and exit_price:
                             pnl = (exit_price - entry_price) * shares
+                            
+                            # Calculate fees
+                            taf_fee = 0.0
+                            cat_fee_buy = 0.0
+                            cat_fee_sell = 0.0
+                            total_fees = 0.0
+                            
+                            # CAT fee on buy (entry)
+                            if include_cat_fees:
+                                cat_fee_buy = calculate_cat_fee(shares)
+                                total_fees += cat_fee_buy
+                            
+                            # TAF fee on sell (exit only)
+                            if include_taf_fees:
+                                taf_fee = calculate_finra_taf_fee(shares)
+                                total_fees += taf_fee
+                            
+                            # CAT fee on sell (exit)
+                            if include_cat_fees:
+                                cat_fee_sell = calculate_cat_fee(shares)
+                                total_fees += cat_fee_sell
+                            
+                            # Subtract all fees from P&L
+                            pnl -= total_fees
+                            
                             pnl_pct = ((exit_price - entry_price) / entry_price) * 100
                             capital += pnl
                             
@@ -530,7 +734,10 @@ def backtest_momentum_strategy(
                                 # Placeholder fields used by UI for other strategies
                                 'hit_target': exit_reason == 'take_profit',
                                 'hit_stop': exit_reason == 'stop_loss',
-                                'dip_pct': np.nan
+                                'dip_pct': np.nan,
+                                'taf_fee': taf_fee,
+                                'cat_fee': cat_fee_buy + cat_fee_sell,
+                                'total_fees': total_fees
                             })
         
         except Exception as e:
