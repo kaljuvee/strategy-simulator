@@ -251,3 +251,64 @@ def search_tickers(company_name: str) -> Optional[List[Dict]]:
     except Exception as e:
         print(f"Error looking up ticker for {company_name}: {str(e)}")
         return None
+
+def get_real_time_price(symbol: str):
+    """
+    Get the most recent price for a symbol using Yahoo Finance
+    
+    Args:
+        symbol: Stock ticker symbol
+        
+    Returns:
+        Current price (may be delayed up to 15 minutes) or None if error
+    """
+    try:
+        ticker = yf.Ticker(symbol)
+        # Get the most recent data
+        hist = ticker.history(period='1d', interval='1m')
+        
+        if hist.empty:
+            # Fallback to daily data if intraday not available
+            hist = ticker.history(period='2d')
+            if hist.empty:
+                return None
+        
+        # Return the most recent close price
+        return float(hist['Close'].iloc[-1])
+        
+    except Exception as e:
+        print(f"Error getting real-time price for {symbol}: {str(e)}")
+        return None
+
+
+def get_historical_data(symbol: str, from_date=None, to_date=None):
+    """
+    Get historical price data for a symbol using Yahoo Finance
+    
+    Args:
+        symbol: Stock ticker symbol
+        from_date: Start date in YYYY-MM-DD format (optional)
+        to_date: End date in YYYY-MM-DD format (optional)
+        
+    Returns:
+        DataFrame with OHLCV data or empty DataFrame if error
+    """
+    import pandas as pd
+    
+    try:
+        ticker = yf.Ticker(symbol)
+        
+        if from_date and to_date:
+            hist = ticker.history(start=from_date, end=to_date)
+        elif from_date:
+            hist = ticker.history(start=from_date)
+        else:
+            # Default to last 30 days
+            hist = ticker.history(period='30d')
+        
+        return hist
+        
+    except Exception as e:
+        print(f"Error getting historical data for {symbol}: {str(e)}")
+        import pandas as pd
+        return pd.DataFrame()

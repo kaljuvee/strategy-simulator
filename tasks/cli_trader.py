@@ -7,9 +7,16 @@ Execute trading strategies from the command line for scheduled/automated trading
 import argparse
 import os
 import sys
+import csv
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
 import logging
+from pathlib import Path
+
+# Add project root to Python path
+project_root = Path(__file__).parent.parent.absolute()
+if str(project_root) not in sys.path:
+    sys.path.insert(0, str(project_root))
 
 # Load environment variables
 load_dotenv()
@@ -29,7 +36,7 @@ logger = logging.getLogger(__name__)
 from utils.alpaca_util import AlpacaAPI
 from utils.alpaca_util import is_market_open as alpaca_market_open
 from utils.backtester_util import backtest_buy_the_dip, backtest_vix_strategy
-from utils.eodhd_util import get_real_time_price, get_historical_data
+from utils.yf_util import get_real_time_price, get_historical_data
 import time
 from datetime import datetime, timedelta
 
@@ -47,6 +54,62 @@ def get_alpaca_client(mode='paper'):
         raise ValueError(f"{mode.upper()} API keys not found in environment")
     
     return AlpacaAPI(api_key=api_key, secret_key=secret_key, paper=(mode == 'paper'))
+
+
+def log_trade_to_csv(trade_data: dict, csv_path: str = 'reports/sample-back-testing-report.csv'):
+    """
+    Log a trade to CSV file in backtesting report format
+    
+    Args:
+        trade_data: Dictionary with trade information
+        csv_path: Path to CSV file
+    """
+    # Ensure reports directory exists
+    Path(csv_path).parent.mkdir(parents=True, exist_ok=True)
+    
+    # Define CSV columns matching backtesting report format
+    fieldnames = [
+        'entry_time', 'exit_time', 'ticker', 'shares', 'entry_price', 'exit_price',
+        'pnl', 'pnl_pct', 'hit_target', 'hit_stop', 'capital_after',
+        'taf_fee', 'cat_fee', 'total_fees', 'dip_pct'
+    ]
+    
+    # Check if file exists to determine if we need to write header
+    file_exists = Path(csv_path).exists()
+    
+    try:
+        with open(csv_path, 'a', newline='') as csvfile:
+            writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+            
+            # Write header if file is new
+            if not file_exists:
+                writer.writeheader()
+            
+            # Format the trade data
+            formatted_trade = {
+                'entry_time': trade_data.get('entry_time', ''),
+                'exit_time': trade_data.get('exit_time', 'OPEN'),
+                'ticker': trade_data.get('ticker', ''),
+                'shares': trade_data.get('shares', 0),
+                'entry_price': f"${trade_data.get('entry_price', 0):.2f}",
+                'exit_price': f"${trade_data.get('exit_price', 0):.2f}" if trade_data.get('exit_price') else 'PENDING',
+                'pnl': f"${trade_data.get('pnl', 0):.2f}" if trade_data.get('pnl') is not None else 'PENDING',
+                'pnl_pct': f"{trade_data.get('pnl_pct', 0):.2f}%" if trade_data.get('pnl_pct') is not None else 'PENDING',
+                'hit_target': str(trade_data.get('hit_target', False)).lower(),
+                'hit_stop': str(trade_data.get('hit_stop', False)).lower(),
+                'capital_after': f"${trade_data.get('capital_after', 0):,.2f}" if trade_data.get('capital_after') else 'PENDING',
+                'taf_fee': f"${trade_data.get('taf_fee', 0):.2f}",
+                'cat_fee': f"${trade_data.get('cat_fee', 0):.2f}",
+                'total_fees': f"${trade_data.get('total_fees', 0):.2f}",
+                'dip_pct': f"{trade_data.get('dip_pct', 0):.2f}%"
+            }
+            
+            writer.writerow(formatted_trade)
+            logger.info(f"Trade logged to {csv_path}: {trade_data.get('ticker')} - {trade_data.get('shares')} shares")
+            
+    except Exception as e:
+        logger.error(f"Error logging trade to CSV: {str(e)}")
+
 
 
 def execute_buy_the_dip_strategy(client, symbols, capital_per_trade=1000, dip_threshold=5.0, use_intraday=True, skip_if_position=True):
@@ -116,6 +179,26 @@ def execute_buy_the_dip_strategy(client, symbols, capital_per_trade=1000, dip_th
                     else:
                         logger.info(f"✅ Order placed: BUY {qty} {symbol} @ market")
                         trades_executed += 1
+                        
+                        # Log trade to CSV
+                        trade_data = {
+                            'entry_time': datetime.now().strftime('%Y-%m-%d %H:%M'),
+                            'exit_time': None,  # Will be updated when position is closed
+                            'ticker': symbol,
+                            'shares': qty,
+                            'entry_price': current_price,
+                            'exit_price': None,  # Pending
+                            'pnl': None,  # Pending
+                            'pnl_pct': None,  # Pending
+                            'hit_target': False,
+                            'hit_stop': False,
+                            'capital_after': None,  # Would need account tracking
+                            'taf_fee': 0.0,
+                            'cat_fee': 0.0,
+                            'total_fees': 0.0,
+                            'dip_pct': dip_pct
+                        }
+                        log_trade_to_csv(trade_data)
                 else:
                     logger.warning(f"Quantity too small for {symbol} (${current_price:.2f})")
             else:
@@ -272,11 +355,11 @@ def main():
     parser.add_argument('--dry-run', action='store_true',
                        help='Dry run mode (no actual trades)')
     
-    parser.add_argument('--loop', action='store_true',
-                       help='Continuously run: check market open and poll at interval')
+    parser.add_argument('--once', action='store_true',
+                       help='Run once and exit (default: run continuously)')
     
     parser.add_argument('--interval', type=int, default=300,
-                       help='Polling interval in seconds for --loop mode (default 300)')
+                       help='Polling interval in seconds for continuous mode (default 300)')
     
     args = parser.parse_args()
     
@@ -295,7 +378,6 @@ def main():
     if args.mode == 'live' and not args.dry_run:
         logger.warning("⚠️  LIVE TRADING MODE - REAL MONEY WILL BE USED!")
         logger.warning("Press Ctrl+C within 5 seconds to cancel...")
-        import time
         time.sleep(5)
     
     try:
@@ -347,8 +429,11 @@ def main():
                     logger.info(f"DRY RUN: Would execute VIX strategy")
                     logger.info(f"Parameters: capital=${args.capital}, vix_threshold={args.vix_threshold}")
         
-        if args.loop:
-            logger.info("Entering continuous loop mode")
+        if args.once:
+            logger.info("Running once and exiting")
+            run_once()
+        else:
+            logger.info("Entering continuous mode (runs indefinitely)")
             while True:
                 try:
                     if args.dry_run or alpaca_market_open():
@@ -358,8 +443,6 @@ def main():
                 except Exception as loop_err:
                     logger.error(f"Error in loop: {loop_err}", exc_info=True)
                 time.sleep(max(5, args.interval))
-        else:
-            run_once()
         
         logger.info("="*60)
         logger.info(f"CLI Trader Completed - {datetime.now()}")
