@@ -8,7 +8,8 @@ import argparse
 import os
 import sys
 import csv
-from datetime import datetime, timedelta
+import yaml
+from datetime import datetime, timedelta, timezone
 from dotenv import load_dotenv
 import logging
 from pathlib import Path
@@ -21,7 +22,7 @@ if str(project_root) not in sys.path:
 # Load environment variables
 load_dotenv()
 
-# Setup logging
+# Setup logging (before config loading so we can log config loading)
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -32,13 +33,49 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# Load configuration
+def load_config():
+    """Load configuration from parameters.yaml"""
+    config_path = Path(__file__).parent.parent / "config" / "parameters.yaml"
+    if config_path.exists():
+        try:
+            with open(config_path, 'r') as f:
+                config = yaml.safe_load(f)
+            logger.info(f"Loaded configuration from {config_path}")
+            return config
+        except Exception as e:
+            logger.warning(f"Could not load config from {config_path}: {e}")
+            logger.info("Using default configuration")
+    else:
+        logger.warning(f"Config file not found at {config_path}, using defaults")
+    
+    # Default configuration
+    return {
+        'buy_the_dip': {
+            'symbols': 'AAPL,MSFT,GOOGL,AMZN,META,TSLA,NVDA',
+            'dip_threshold': 1.0,
+            'take_profit_threshold': 1.0,
+            'capital_per_trade': 1000.0,
+            'max_position_pct': 5.0
+        },
+        'vix': {
+            'symbols': 'AAPL,MSFT,GOOGL,AMZN,META,TSLA,NVDA',
+            'vix_threshold': 20.0,
+            'capital_per_trade': 1000.0
+        },
+        'general': {
+            'check_order_status_interval': 60,
+            'polling_interval': 300
+        }
+    }
+
 # Import utilities
 from utils.alpaca_util import AlpacaAPI
 from utils.alpaca_util import is_market_open as alpaca_market_open
 from utils.backtester_util import backtest_buy_the_dip, backtest_vix_strategy
 from utils.yf_util import get_real_time_price, get_historical_data
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 
 def get_alpaca_client(mode='paper'):
@@ -112,7 +149,7 @@ def log_trade_to_csv(trade_data: dict, csv_path: str = 'reports/sample-back-test
 
 
 
-def execute_buy_the_dip_strategy(client, symbols, capital_per_trade=1000, dip_threshold=5.0, use_intraday=True, skip_if_position=True):
+def execute_buy_the_dip_strategy(client, symbols, capital_per_trade=1000, dip_threshold=1.0, take_profit_threshold=1.0, use_intraday=True):
     """
     Execute buy-the-dip strategy
     
@@ -121,15 +158,35 @@ def execute_buy_the_dip_strategy(client, symbols, capital_per_trade=1000, dip_th
         symbols: List of stock symbols
         capital_per_trade: Capital to allocate per trade
         dip_threshold: Percentage dip to trigger buy
+        take_profit_threshold: Percentage gain to take profit
     """
     logger.info(f"Executing buy-the-dip strategy for {len(symbols)} symbols")
+    logger.info(f"Parameters: dip_threshold={dip_threshold}%, take_profit_threshold={take_profit_threshold}%")
+    
+    # Get account info to check buying power
+    account = client.get_account()
+    if 'error' in account:
+        logger.error(f"Cannot get account info: {account['error']}")
+        return 0, []
+    
+    buying_power = float(account.get('buying_power', 0))
+    if buying_power <= 0:
+        logger.warning(f"Insufficient buying power: ${buying_power:.2f}")
+        return 0, []
+    
+    logger.info(f"Available buying power: ${buying_power:,.2f}")
+    
+    # Calculate max position size (5% of buying power)
+    max_position_value = buying_power * 0.05
+    logger.info(f"Max position size (5% of buying power): ${max_position_value:,.2f}")
     
     trades_executed = 0
+    order_ids = []  # Track order IDs for status checking
     
     for symbol in symbols:
         try:
             # Get recent price data (last ~30 days) using EODHD
-            from_date = (datetime.utcnow() - timedelta(days=40)).strftime("%Y-%m-%d")
+            from_date = (datetime.now(timezone.utc) - timedelta(days=40)).strftime("%Y-%m-%d")
             hist = get_historical_data(symbol, from_date=from_date)
             
             if hist.empty:
@@ -149,21 +206,45 @@ def execute_buy_the_dip_strategy(client, symbols, capital_per_trade=1000, dip_th
             logger.info(f"{symbol}: Recent high ${recent_high:.2f}, Current ${current_price:.2f}, Dip {dip_pct:.2f}%")
             
             # Check if dip threshold met
+            if dip_pct < dip_threshold:
+                logger.info(f"  ⏭️  Skipping {symbol}: Dip {dip_pct:.2f}% < Threshold {dip_threshold}%")
+                continue
+            
             if dip_pct >= dip_threshold:
-                # Optional: skip if we already have a position in this symbol
-                if skip_if_position and client:
+                # Always check for existing position before executing order
+                if client:
                     try:
                         pos = client.get_position(symbol)
-                        if isinstance(pos, dict) and 'error' not in pos:
-                            logger.info(f"Skipping {symbol}: existing position detected")
+                        if pos and isinstance(pos, dict) and 'error' not in pos:
+                            logger.info(f"Skipping {symbol}: existing position detected ({pos.get('qty', 0)} shares)")
                             continue
-                    except Exception:
-                        pass
-                # Calculate quantity
-                qty = int(capital_per_trade / current_price)
+                    except Exception as pos_err:
+                        logger.warning(f"Error checking position for {symbol}: {pos_err}")
+                        # Continue anyway if position check fails
+                
+                # Calculate quantity based on capital_per_trade, but cap at 5% of buying power
+                position_value = min(capital_per_trade, max_position_value)
+                qty = int(position_value / current_price)
+                
+                # Verify we don't exceed buying power
+                order_value = qty * current_price
+                if order_value > buying_power:
+                    logger.warning(f"Cannot place order for {symbol}: order value ${order_value:.2f} exceeds buying power ${buying_power:.2f}")
+                    continue
+                
+                # Check position size as percentage of buying power
+                position_pct = (order_value / buying_power) * 100
+                if position_pct > 5.0:
+                    # Recalculate to ensure exactly 5% max
+                    max_order_value = buying_power * 0.05
+                    qty = int(max_order_value / current_price)
+                    order_value = qty * current_price
+                    position_pct = (order_value / buying_power) * 100
+                    logger.info(f"Position size capped at 5% of buying power for {symbol}")
                 
                 if qty > 0:
                     logger.info(f"BUY SIGNAL: {symbol} - Dip {dip_pct:.2f}% >= {dip_threshold}%")
+                    logger.info(f"  Order: {qty} shares @ ${current_price:.2f} = ${order_value:.2f} ({position_pct:.2f}% of buying power)")
                     
                     # Place order
                     result = client.create_order(
@@ -177,8 +258,26 @@ def execute_buy_the_dip_strategy(client, symbols, capital_per_trade=1000, dip_th
                     if 'error' in result:
                         logger.error(f"Order failed for {symbol}: {result['error']}")
                     else:
+                        order_id = result.get('id')
+                        order_status = result.get('status', 'unknown')
                         logger.info(f"✅ Order placed: BUY {qty} {symbol} @ market")
+                        logger.info(f"   Order ID: {order_id}, Status: {order_status}")
+                        
+                        if order_id:
+                            order_ids.append({
+                                'order_id': str(order_id),
+                                'symbol': symbol,
+                                'qty': qty,
+                                'status': str(order_status) if order_status else 'unknown',
+                                'timestamp': datetime.now(timezone.utc).isoformat()
+                            })
+                        
                         trades_executed += 1
+                        
+                        # Update buying power after successful order
+                        buying_power -= order_value
+                        max_position_value = buying_power * 0.05
+                        logger.info(f"Remaining buying power: ${buying_power:,.2f}")
                         
                         # Log trade to CSV
                         trade_data = {
@@ -201,14 +300,12 @@ def execute_buy_the_dip_strategy(client, symbols, capital_per_trade=1000, dip_th
                         log_trade_to_csv(trade_data)
                 else:
                     logger.warning(f"Quantity too small for {symbol} (${current_price:.2f})")
-            else:
-                logger.debug(f"No signal for {symbol} (dip {dip_pct:.2f}% < {dip_threshold}%)")
                 
         except Exception as e:
             logger.error(f"Error processing {symbol}: {str(e)}")
     
     logger.info(f"Strategy execution complete. Trades executed: {trades_executed}")
-    return trades_executed
+    return trades_executed, order_ids
 
 
 def execute_vix_strategy(client, symbols, capital_per_trade=1000, vix_threshold=20.0):
@@ -329,7 +426,80 @@ def get_account_status(client):
         return None
 
 
+def check_order_status(client, order_ids):
+    """Check status of orders and report to console"""
+    logger.info("="*60)
+    logger.info("ORDER STATUS CHECK")
+    logger.info("="*60)
+    
+    # Also check recent orders from API
+    try:
+        recent_orders = client.get_orders(status='open')
+        if isinstance(recent_orders, list) and len(recent_orders) > 0:
+            logger.info(f"Found {len(recent_orders)} open orders from API:")
+            for order in recent_orders:
+                order_id = order.get('id')
+                symbol = order.get('symbol')
+                status = order.get('status', 'unknown')
+                logger.info(f"  {str(order_id)}: {symbol} - {str(status)}")
+    except Exception as e:
+        logger.debug(f"Could not fetch recent orders: {e}")
+    
+    if not order_ids:
+        logger.info("No tracked orders to check")
+        logger.info("="*60)
+        return
+    
+    for order_info in order_ids:
+        order_id = order_info['order_id']
+        symbol = order_info['symbol']
+        
+        try:
+            order = client.get_order(order_id)
+            
+            if 'error' in order:
+                logger.warning(f"Order {order_id} ({symbol}): Error checking status - {order['error']}")
+                continue
+            
+            status = order.get('status', 'unknown')
+            filled_qty = float(order.get('filled_qty', 0))
+            qty = float(order.get('qty', 0))
+            filled_avg_price = order.get('filled_avg_price')
+            
+            status_str = str(status) if status else 'unknown'
+            
+            # Update order status in tracked list
+            order_info['status'] = status_str
+            order_info['filled_qty'] = filled_qty
+            order_info['filled_avg_price'] = float(filled_avg_price) if filled_avg_price else None
+            
+            logger.info(f"Order {order_id} ({symbol}):")
+            logger.info(f"  Status: {status_str}")
+            logger.info(f"  Quantity: {qty} shares")
+            logger.info(f"  Filled: {filled_qty} shares")
+            
+            if filled_avg_price:
+                logger.info(f"  Avg Fill Price: ${float(filled_avg_price):.2f}")
+            
+            if status_str.lower() in ['filled', 'partially_filled']:
+                logger.info(f"  ✅ Order executed successfully")
+            elif status_str.lower() in ['pending_new', 'accepted', 'pending_replace']:
+                logger.info(f"  ⏳ Order still pending")
+            elif status_str.lower() in ['rejected', 'expired', 'canceled']:
+                logger.warning(f"  ❌ Order {status_str}")
+                if order.get('reject_reason'):
+                    logger.warning(f"  Reject Reason: {order.get('reject_reason')}")
+            
+        except Exception as e:
+            logger.error(f"Error checking order {order_id} ({symbol}): {str(e)}")
+    
+    logger.info("="*60)
+
+
 def main():
+    # Load configuration first
+    config = load_config()
+    
     parser = argparse.ArgumentParser(description='Command-line trading script for automated strategy execution')
     
     parser.add_argument('--strategy', type=str, required=True,
@@ -340,16 +510,24 @@ def main():
                        choices=['paper', 'live'],
                        help='Trading mode (paper or live)')
     
-    parser.add_argument('--symbols', type=str, default='AAPL,MSFT,GOOGL,AMZN,META,TSLA,NVDA',
+    parser.add_argument('--symbols', type=str,
+                       default=config.get('buy_the_dip', {}).get('symbols', 'AAPL,MSFT,GOOGL,AMZN,META,TSLA,NVDA'),
                        help='Comma-separated list of stock symbols')
     
-    parser.add_argument('--capital', type=float, default=1000.0,
+    parser.add_argument('--capital', type=float, 
+                       default=config.get('buy_the_dip', {}).get('capital_per_trade', 1000.0),
                        help='Capital per trade in dollars')
     
-    parser.add_argument('--dip-threshold', type=float, default=5.0,
+    parser.add_argument('--dip-threshold', type=float,
+                       default=config.get('buy_the_dip', {}).get('dip_threshold', 1.0),
                        help='Dip threshold percentage for buy-the-dip strategy')
     
-    parser.add_argument('--vix-threshold', type=float, default=20.0,
+    parser.add_argument('--take-profit-threshold', type=float,
+                       default=config.get('buy_the_dip', {}).get('take_profit_threshold', 1.0),
+                       help='Take profit threshold percentage for buy-the-dip strategy')
+    
+    parser.add_argument('--vix-threshold', type=float,
+                       default=config.get('vix', {}).get('vix_threshold', 20.0),
                        help='VIX threshold for VIX strategy')
     
     parser.add_argument('--dry-run', action='store_true',
@@ -358,8 +536,9 @@ def main():
     parser.add_argument('--once', action='store_true',
                        help='Run once and exit (default: run continuously)')
     
-    parser.add_argument('--interval', type=int, default=300,
-                       help='Polling interval in seconds for continuous mode (default 300)')
+    parser.add_argument('--interval', type=int,
+                       default=config.get('general', {}).get('polling_interval', 300),
+                       help='Polling interval in seconds for continuous mode')
     
     args = parser.parse_args()
     
@@ -391,6 +570,8 @@ def main():
         
         # Execute strategy (single-run or loop)
         def run_once():
+            order_ids = []
+            
             if args.strategy == 'status':
                 if client:
                     get_account_status(client)
@@ -405,17 +586,18 @@ def main():
                     
             elif args.strategy == 'buy-the-dip':
                 if client:
-                    execute_buy_the_dip_strategy(
+                    trades_executed, order_ids = execute_buy_the_dip_strategy(
                         client,
                         symbols,
                         capital_per_trade=args.capital,
                         dip_threshold=args.dip_threshold,
-                        use_intraday=True,
-                        skip_if_position=True
+                        take_profit_threshold=getattr(args, 'take_profit_threshold', config.get('buy_the_dip', {}).get('take_profit_threshold', 1.0)),
+                        use_intraday=True
                     )
                 else:
+                    take_profit = getattr(args, 'take_profit_threshold', config.get('buy_the_dip', {}).get('take_profit_threshold', 1.0))
                     logger.info(f"DRY RUN: Would execute buy-the-dip strategy")
-                    logger.info(f"Parameters: capital=${args.capital}, dip_threshold={args.dip_threshold}%")
+                    logger.info(f"Parameters: capital=${args.capital}, dip_threshold={args.dip_threshold}%, take_profit={take_profit}%")
                     
             elif args.strategy == 'vix':
                 if client:
@@ -428,18 +610,39 @@ def main():
                 else:
                     logger.info(f"DRY RUN: Would execute VIX strategy")
                     logger.info(f"Parameters: capital=${args.capital}, vix_threshold={args.vix_threshold}")
+            
+            return order_ids
         
         if args.once:
             logger.info("Running once and exiting")
             run_once()
         else:
             logger.info("Entering continuous mode (runs indefinitely)")
+            tracked_orders = []  # Track orders across iterations
+            last_status_check = datetime.now(timezone.utc)
+            
             while True:
                 try:
                     if args.dry_run or alpaca_market_open():
-                        run_once()
+                        new_order_ids = run_once()
+                        if new_order_ids:
+                            tracked_orders.extend(new_order_ids)
+                            logger.info(f"Tracking {len(tracked_orders)} orders")
                     else:
                         logger.info("Market is closed; sleeping until next interval")
+                    
+                    # Check order status at configured interval
+                    check_interval = config.get('general', {}).get('check_order_status_interval', 60)
+                    current_time = datetime.now(timezone.utc)
+                    time_since_check = (current_time - last_status_check).total_seconds()
+                    
+                    if time_since_check >= check_interval and tracked_orders and client:
+                        check_order_status(client, tracked_orders)
+                        last_status_check = current_time
+                        
+                        # Remove filled/canceled orders from tracking
+                        tracked_orders = [o for o in tracked_orders if o.get('status', '').lower() not in ['filled', 'canceled', 'expired', 'rejected']]
+                        
                 except Exception as loop_err:
                     logger.error(f"Error in loop: {loop_err}", exc_info=True)
                 time.sleep(max(5, args.interval))

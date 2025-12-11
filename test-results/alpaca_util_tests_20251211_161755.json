@@ -1,0 +1,109 @@
+{
+  "timestamp": "2025-12-11T16:17:51.929369+00:00",
+  "tests": [
+    {
+      "test_name": "Get Account Info",
+      "passed": true,
+      "details": {
+        "portfolio_value": 101672.89,
+        "cash": 30797.35,
+        "buying_power": 132470.24,
+        "equity": 101672.89,
+        "status": "ACTIVE",
+        "pattern_day_trader": true,
+        "trading_blocked": false
+      },
+      "error": null,
+      "timestamp": "2025-12-11T16:17:52.369594+00:00"
+    },
+    {
+      "test_name": "Get All Positions",
+      "passed": true,
+      "details": {
+        "count": 3,
+        "positions": [
+          {
+            "symbol": "AMZN",
+            "qty": 4.0,
+            "market_value": 916.76,
+            "unrealized_pl": -1.0,
+            "current_price": 229.19
+          },
+          {
+            "symbol": "MSFT",
+            "qty": 144.0,
+            "market_value": 69072.48,
+            "unrealized_pl": -85.81,
+            "current_price": 479.67
+          },
+          {
+            "symbol": "NVDA",
+            "qty": 5.0,
+            "market_value": 886.3,
+            "unrealized_pl": -0.3,
+            "current_price": 177.26
+          }
+        ]
+      },
+      "error": null,
+      "timestamp": "2025-12-11T16:17:52.499919+00:00"
+    },
+    {
+      "test_name": "Get Position (AAPL)",
+      "passed": true,
+      "details": {
+        "position": null
+      },
+      "error": null,
+      "timestamp": "2025-12-11T16:17:52.626856+00:00"
+    },
+    {
+      "test_name": "Get Position (MSFT)",
+      "passed": true,
+      "details": {
+        "symbol": "MSFT",
+        "qty": 144.0,
+        "market_value": 69072.48,
+        "unrealized_pl": -85.81,
+        "current_price": 479.67
+      },
+      "error": null,
+      "timestamp": "2025-12-11T16:17:52.755287+00:00"
+    },
+    {
+      "test_name": "Get Position (NVDA)",
+      "passed": true,
+      "details": {
+        "symbol": "NVDA",
+        "qty": 5.0,
+        "market_value": 886.35,
+        "unrealized_pl": -0.25,
+        "current_price": 177.27
+      },
+      "error": null,
+      "timestamp": "2025-12-11T16:17:52.883769+00:00"
+    },
+    {
+      "test_name": "Get Position (SPY)",
+      "passed": true,
+      "details": {
+        "position": null
+      },
+      "error": null,
+      "timestamp": "2025-12-11T16:17:53.013102+00:00"
+    },
+    {
+      "test_name": "Get Open Orders",
+      "passed": true,
+      "details": {
+        "count": 0,
+        "orders": []
+      },
+      "error": null,
+      "timestamp": "2025-12-11T16:17:53.150903+00:00"
+    },
+    {
+      "test_name": "Create Market Order",
+      "passed": true,
+      "details": {
+        "order_id": 

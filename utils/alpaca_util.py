@@ -93,20 +93,15 @@ class AlpacaAPI:
         from alpaca.trading.requests import MarketOrderRequest, LimitOrderRequest, StopOrderRequest, StopLimitOrderRequest, TrailingStopOrderRequest
         from alpaca.trading.enums import OrderSide, TimeInForce
         try:
+            # Enforce market orders only
+            if type != 'market':
+                raise ValueError(f"Only market orders are allowed. Requested type: {type}")
+            
             side_enum = OrderSide.BUY if side.lower() == 'buy' else OrderSide.SELL
             tif_enum = TimeInForce.DAY if time_in_force.lower() == 'day' else TimeInForce.GTC
-            if type == 'market':
-                req = MarketOrderRequest(symbol=symbol, qty=qty, side=side_enum, time_in_force=tif_enum)
-            elif type == 'limit':
-                req = LimitOrderRequest(symbol=symbol, qty=qty, side=side_enum, time_in_force=tif_enum, limit_price=kwargs.get('limit_price'))
-            elif type == 'stop':
-                req = StopOrderRequest(symbol=symbol, qty=qty, side=side_enum, time_in_force=tif_enum, stop_price=kwargs.get('stop_price'))
-            elif type == 'stop_limit':
-                req = StopLimitOrderRequest(symbol=symbol, qty=qty, side=side_enum, time_in_force=tif_enum, limit_price=kwargs.get('limit_price'), stop_price=kwargs.get('stop_price'))
-            elif type == 'trailing_stop':
-                req = TrailingStopOrderRequest(symbol=symbol, qty=qty, side=side_enum, time_in_force=tif_enum, trail_price=kwargs.get('trail_price'), trail_percent=kwargs.get('trail_percent'))
-            else:
-                raise ValueError(f"Unsupported order type: {type}")
+            
+            # Only create market orders
+            req = MarketOrderRequest(symbol=symbol, qty=qty, side=side_enum, time_in_force=tif_enum)
             order = self.trading_client.submit_order(req)
             order_dict = order.dict()
             
@@ -219,8 +214,12 @@ class AlpacaAPI:
     def get_position(self, symbol: str) -> Dict:
         """Get position for a specific symbol"""
         try:
-            position = self.trading_client.get_position(symbol)
-            return position.dict()
+            positions = self.trading_client.get_all_positions()
+            for position in positions:
+                if position.symbol == symbol.upper():
+                    return position.dict()
+            # Return None if position not found (not an error)
+            return None
         except Exception as e:
             logger.error(f"API request failed: {e}")
             return {"error": str(e)}
