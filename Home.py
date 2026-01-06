@@ -89,8 +89,31 @@ SECTOR_ETFS = {
     "Communication Services": "XLC"
 }
 
+# European / APAC ETFs
+GLOBAL_ETFS = {
+    "Spain": "EWP",
+    "Austria": "EWO",
+    "Italy": "EWI",
+    "Israel": "EIS",
+    "Finland": "EFNL",
+    "Canada": "EWC",
+    "Germany": "EWG",
+    "Belgium": "EWK",
+    "Sweden": "EWD",
+    "Switzerland": "EWL",
+    "Hong Kong": "EWH",
+    "Great Britain": "EWU",
+    "Netherlands": "EWN",
+    "Norway": "ENOR",
+    "Ireland": "EIRL",
+    "Singapore": "EWS",
+    "France": "EWQ",
+    "Japan": "EWJ",
+    "Australia": "EWA"
+}
+
 # Combine all options
-all_options = {**MAG7_STOCKS, **ADDITIONAL_STOCKS, **SECTOR_ETFS}
+all_options = {**MAG7_STOCKS, **ADDITIONAL_STOCKS, **SECTOR_ETFS, **GLOBAL_ETFS}
 
 # Default to Mag 7
 default_selections = list(MAG7_STOCKS.keys())
@@ -104,6 +127,17 @@ selected_names = st.sidebar.multiselect(
 
 # Convert selected names to symbols
 selected_symbols = [all_options[name] for name in selected_names]
+
+st.sidebar.markdown("---")
+st.sidebar.subheader("Benchmarks")
+
+selected_global_names = st.sidebar.multiselect(
+    "Global Benchmarks (Europe/APAC)",
+    options=list(GLOBAL_ETFS.keys()),
+    default=[],
+    help="Select European or APAC ETFs to include as benchmarks in the graph"
+)
+selected_global_symbols = [GLOBAL_ETFS[name] for name in selected_global_names]
 
 st.sidebar.markdown("---")
 st.sidebar.subheader("Data Configuration")
@@ -410,6 +444,13 @@ if st.button("🚀 Run Backtest", type="primary", use_container_width=True):
             spy_dates, spy_values = calculate_single_buy_and_hold('SPY', start_dt, end_dt, initial_capital)
             portfolio_dates, portfolio_values = calculate_buy_and_hold(selected_symbols, start_dt, end_dt, initial_capital)
             
+            # Calculate global benchmarks
+            global_benchmarks = {}
+            for g_symbol in selected_global_symbols:
+                g_dates, g_values = calculate_single_buy_and_hold(g_symbol, start_dt, end_dt, initial_capital)
+                if not g_values.empty:
+                    global_benchmarks[g_symbol] = (g_dates, g_values)
+            
             # Calculate buy-and-hold returns
             spy_return = 0.0
             portfolio_return = 0.0
@@ -487,6 +528,16 @@ if st.button("🚀 Run Backtest", type="primary", use_container_width=True):
                     mode='lines',
                     name='Buy & Hold (SPY)',
                     line=dict(color='#ff7f0e', width=2, dash='dash')
+                ))
+            
+            # Global Benchmarks (European / APAC)
+            for g_symbol, (g_dates, g_values) in global_benchmarks.items():
+                fig.add_trace(go.Scatter(
+                    x=g_dates,
+                    y=g_values,
+                    mode='lines',
+                    name=f'Buy & Hold ({g_symbol})',
+                    line=dict(width=1.5, dash='dashdot')
                 ))
             
             # Add initial capital line
